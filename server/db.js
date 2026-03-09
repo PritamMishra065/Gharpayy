@@ -1,11 +1,28 @@
 import mysql from 'mysql2/promise';
+import fs from 'fs';
+import path from 'path';
 
 const uri = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/gharpayy';
 const isCloud = uri.includes('aws.tidbcloud.com') || uri.includes('ssl=');
 
+let sslConfig = undefined;
+if (isCloud) {
+  try {
+    const certPath = path.resolve(process.cwd(), 'server/isrgrootx1.pem');
+    const caCert = fs.readFileSync(certPath);
+    sslConfig = {
+      ca: caCert,
+      rejectUnauthorized: true
+    };
+  } catch (err) {
+    console.error('⚠️ Could not load CA certificate. Falling back to default SSL config.', err);
+    sslConfig = { rejectUnauthorized: true };
+  }
+}
+
 const pool = mysql.createPool({
   uri,
-  ssl: isCloud ? { rejectUnauthorized: true } : undefined,
+  ssl: sslConfig,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
