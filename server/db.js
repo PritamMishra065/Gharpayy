@@ -1,7 +1,11 @@
 import mysql from 'mysql2/promise';
 
+const uri = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/gharpayy';
+const isCloud = uri.includes('aws.tidbcloud.com') || uri.includes('ssl=');
+
 const pool = mysql.createPool({
-  uri: process.env.DATABASE_URL || 'mysql://root:@localhost:3306/gharpayy',
+  uri,
+  ssl: isCloud ? { rejectUnauthorized: true } : undefined,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
