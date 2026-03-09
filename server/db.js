@@ -2,8 +2,7 @@ import mysql from 'mysql2/promise';
 import fs from 'fs';
 import path from 'path';
 
-const uri = process.env.DATABASE_URL || 'mysql://root:@localhost:3306/gharpayy';
-const isCloud = uri.includes('aws.tidbcloud.com') || uri.includes('ssl=');
+const isCloud = true; // Forcing true since we are hardcoding the cloud credentials
 
 let sslConfig = undefined;
 if (isCloud) {
@@ -21,7 +20,11 @@ if (isCloud) {
 }
 
 const pool = mysql.createPool({
-  uri,
+  host: process.env.TIDB_HOST || 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com',
+  port: process.env.TIDB_PORT || 4000,
+  user: process.env.TIDB_USER || 'i3f5PA8K9VVwKFa.root',
+  password: process.env.TIDB_PASSWORD || process.env.DB_PASSWORD, // Fallback if using .env
+  database: process.env.TIDB_DATABASE || 'test',
   ssl: sslConfig,
   waitForConnections: true,
   connectionLimit: 10,
