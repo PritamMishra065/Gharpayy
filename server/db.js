@@ -1,39 +1,65 @@
-import fs from 'fs/promises';
-import path from 'path';
+import mysql from 'mysql2/promise';
 
-const DB_FILE = path.join(process.cwd(), 'server', 'database.json');
+const pool = mysql.createPool({
+  uri: process.env.DATABASE_URL || 'mysql://root:@localhost:3306/gharpayy',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
 
-const DEFAULT_DATA = {
-  leads: [],
-  visits: [],
-  activities: []
+const initDB = async () => {
+  try {
+    const connection = await pool.getConnection();
+
+    // Create Leads Table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS leads (
+        id VARCHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(50),
+        stage VARCHAR(50) DEFAULT 'New Lead',
+        source VARCHAR(50),
+        budget VARCHAR(100),
+        location VARCHAR(255),
+        assignedTo VARCHAR(100),
+        score INT DEFAULT 0,
+        isNew BOOLEAN DEFAULT TRUE,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        lastActivity DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create Visits Table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS visits (
+        id VARCHAR(36) PRIMARY KEY,
+        leadId VARCHAR(36) NOT NULL,
+        property VARCHAR(255) NOT NULL,
+        date DATETIME NOT NULL,
+        status VARCHAR(50) DEFAULT 'pending',
+        notes TEXT,
+        INDEX idx_leadId (leadId)
+      )
+    `);
+
+    // Create Activities Table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS activities (
+        id VARCHAR(36) PRIMARY KEY,
+        leadId VARCHAR(36) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        content TEXT,
+        actor VARCHAR(100),
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_leadId (leadId)
+      )
+    `);
+
+    connection.release();
+    console.log('✅ TiDB MySQL initialized successfully, tables verified.');
+  } catch (error) {
+    console.error('❌ Database Initialization failed:', error);
+  }
 };
 
-// Ensure DB exists
-export async function initDB() {
-  try {
-    await fs.access(DB_FILE);
-  } catch (err) {
-    console.log('📦 Creating local JSON database at', DB_FILE);
-    await fs.writeFile(DB_FILE, JSON.stringify(DEFAULT_DATA, null, 2), 'utf8');
-  }
-}
-
-export async function readDB() {
-  try {
-    const data = await fs.readFile(DB_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return DEFAULT_DATA;
-    }
-    throw err;
-  }
-}
-
-export async function writeDB(data) {
-  // Use a temporary file for atomic writes
-  const tempFile = DB_FILE + '.tmp';
-  await fs.writeFile(tempFile, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tempFile, DB_FILE);
-}
+export { pool, initDB };

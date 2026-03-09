@@ -1,42 +1,55 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { readDB, writeDB } from '../db.js';
+import { pool } from '../db.js';
 
 const router = Router();
 
 router.get('/:leadId', async (req, res) => {
   try {
-    const db = await readDB();
-    const activities = db.activities
-      .filter(a => a.leadId === req.params.leadId)
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    res.json(activities);
+    const [rows] = await pool.query(
+      'SELECT *, id as _id, createdAt as timestamp FROM activities WHERE leadId = ? ORDER BY createdAt DESC',
+      [req.params.leadId]
+    );
+    res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const db = await readDB();
-    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    const { leadId, type, message, content, agent, actor } = req.body;
     
-    const activity = {
-      ...req.body,
-      _id: crypto.randomUUID(),
-      timestamp: req.body.timestamp || now
-    };
-    activity.id = activity._id; // Front-end fallback compatibility
+    // Fallbacks for variable names between previous implementation and new Table Schema
+    const finalContent = content || message || '';
+    const finalActor = actor || agent || 'System';
 
-    db.activities.push(activity);
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // Update lead lastActivity
-    const lIdx = db.leads.findIndex(l => l._id === req.body.leadId);
-    if (lIdx !== -1) {
-      db.leads[lIdx].lastActivity = activity.timestamp;
-      db.leads[lIdx].updatedAt = now;
+    try {
+      await connection.query(
+        `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
+        [id, leadId, type, finalContent, finalActor]
+      );
+
+      await connection.query(
+        `UPDATE leads SET lastActivity = CURRENT_TIMESTAMP WHERE id = ?`,
+        [leadId]
+      );
+
+      await connection.commit();
+      
+      const [newActivity] = await connection.query(
+        'SELECT *, id as _id, createdAt as timestamp FROM activities WHERE id = ?', 
+        [id]
+      );
+      res.status(201).json(newActivity[0]);
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
     }
-
-    await writeDB(db);
-    res.status(201).json(activity);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 

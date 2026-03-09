@@ -1,90 +1,120 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { readDB, writeDB } from '../db.js';
+import { pool } from '../db.js';
 
 const router = Router();
 
 router.get('/', async (req, res) => {
   try {
-    const db = await readDB();
-    let visits = db.visits;
+    let query = 'SELECT *, id as _id FROM visits';
+    const params = [];
+
     if (req.query.status) {
-      visits = visits.filter(v => v.status === req.query.status);
+      query += ' WHERE status = ?';
+      params.push(req.query.status);
     }
-    visits.sort((a, b) => new Date(b.date) - new Date(a.date));
-    res.json(visits);
+    
+    query += ' ORDER BY date DESC';
+
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const db = await readDB();
-    const now = new Date().toISOString();
-    
-    const visit = {
-      ...req.body,
-      _id: crypto.randomUUID(),
-      createdAt: now,
-      updatedAt: now
-    };
-    visit.id = visit._id; // Front-end fallback compatibility
+    const id = crypto.randomUUID();
+    const { leadId, property, date, status = 'pending', notes } = req.body;
 
-    db.visits.push(visit);
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    if (req.body.leadId) {
-      const lIdx = db.leads.findIndex(l => l._id === req.body.leadId);
-      if (lIdx !== -1) {
-        db.leads[lIdx].stage = 'visit_scheduled';
-        db.leads[lIdx].updatedAt = now;
-        db.leads[lIdx].lastActivity = now;
+    try {
+      await connection.query(
+        `INSERT INTO visits (id, leadId, property, date, status, notes) VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, leadId, property, date, status, notes]
+      );
+
+      if (leadId) {
+        await connection.query(
+          `UPDATE leads SET stage = 'visit_scheduled', lastActivity = CURRENT_TIMESTAMP WHERE id = ?`,
+          [leadId]
+        );
         
-        db.activities.push({
-          _id: crypto.randomUUID(),
-          leadId: req.body.leadId,
-          type: 'visit_scheduled',
-          message: `Visit scheduled at ${req.body.propertyName} for ${req.body.date}, ${req.body.time}`,
-          agent: req.body.agent,
-          timestamp: now
-        });
+        await connection.query(
+          `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
+          [crypto.randomUUID(), leadId, 'visit_scheduled', `Visit scheduled at ${property} for ${date}`, 'System']
+        );
       }
-    }
 
-    await writeDB(db);
-    res.status(201).json(visit);
+      await connection.commit();
+      
+      const [newVisit] = await connection.query('SELECT *, id as _id FROM visits WHERE id = ?', [id]);
+      res.status(201).json(newVisit[0]);
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.patch('/:id', async (req, res) => {
   try {
-    const db = await readDB();
-    const vIdx = db.visits.findIndex(v => v._id === req.params.id);
-    if (vIdx === -1) return res.status(404).json({ error: 'Visit not found' });
-    
-    const now = new Date().toISOString();
-    const updatedVisit = { ...db.visits[vIdx], ...req.body, updatedAt: now };
-    db.visits[vIdx] = updatedVisit;
+    const { id } = req.params;
+    const { status, outcome, notes } = req.body;
 
-    if (req.body.status === 'completed' && req.body.outcome) {
-      const lIdx = db.leads.findIndex(l => l._id === updatedVisit.leadId);
-      if (lIdx !== -1) {
-        const newStage = req.body.outcome === 'booked' ? 'booked' : 'visit_done';
-        db.leads[lIdx].stage = newStage;
-        db.leads[lIdx].updatedAt = now;
-        db.leads[lIdx].lastActivity = now;
-        
-        db.activities.push({
-          _id: crypto.randomUUID(),
-          leadId: updatedVisit.leadId,
-          type: 'visit_completed',
-          message: `Visit completed — outcome: ${req.body.outcome}`,
-          agent: updatedVisit.agent,
-          timestamp: now
-        });
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      const [visits] = await connection.query('SELECT * FROM visits WHERE id = ?', [id]);
+      if (visits.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: 'Visit not found' });
       }
+      
+      const existingVisit = visits[0];
+
+      let query = 'UPDATE visits SET ';
+      const params = [];
+      const setClauses = [];
+      
+      if (status !== undefined) { setClauses.push('status = ?'); params.push(status); }
+      if (notes !== undefined) { setClauses.push('notes = ?'); params.push(notes); }
+      
+      if (setClauses.length > 0) {
+        query += setClauses.join(', ') + ' WHERE id = ?';
+        params.push(id);
+        await connection.query(query, params);
+      }
+
+      if (status === 'completed' && outcome) {
+        const newStage = outcome === 'booked' ? 'booked' : 'visit_done';
+        
+        await connection.query(
+          `UPDATE leads SET stage = ?, lastActivity = CURRENT_TIMESTAMP WHERE id = ?`,
+          [newStage, existingVisit.leadId]
+        );
+        
+        await connection.query(
+          `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
+          [crypto.randomUUID(), existingVisit.leadId, 'visit_completed', `Visit completed — outcome: ${outcome}`, 'System']
+        );
+      }
+
+      await connection.commit();
+      
+      const [updatedVisit] = await connection.query('SELECT *, id as _id FROM visits WHERE id = ?', [id]);
+      res.json(updatedVisit[0]);
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
     }
 
-    await writeDB(db);
-    res.json(updatedVisit);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 

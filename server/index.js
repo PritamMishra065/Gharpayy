@@ -25,13 +25,18 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', db: 'local_json' });
 });
 
-// Initialize DB and start server
-initDB().then(() => {
+// Initialize DB
+initDB().catch(err => {
+  console.error('❌ Failed to initialize TiDB database:', err);
+});
+
+// For local development
+if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 API server running on http://localhost:${PORT}`);
-    console.log(`📦 Using local JSON database (server/database.json)`);
+    console.log(`📦 Using TiDB MySQL database`);
   });
-}).catch(err => {
-  console.error('❌ Failed to initialize local database:', err);
-  process.exit(1);
-});
+}
+
+// Export for Vercel Serverless
+export default app;
