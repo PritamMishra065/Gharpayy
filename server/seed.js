@@ -1,6 +1,8 @@
-import crypto from 'crypto';
 import dotenv from 'dotenv';
-import { pool, initDB } from './db.js';
+import { connectDB } from './db.js';
+import Lead from './models/Lead.js';
+import Visit from './models/Visit.js';
+import Activity from './models/Activity.js';
 
 dotenv.config();
 
@@ -24,49 +26,38 @@ const LEADS_DATA = [
 
 async function seed() {
   try {
-    console.log('🔄 Initializing database tables...');
-    await initDB();
+    console.log('🔄 Connecting to MongoDB database...');
+    await connectDB();
 
-    const connection = await pool.getConnection();
-    console.log('🔗 Connected to TiDB database. Starting seed process...');
-
-    // Clear existing data (optional, but good for a fresh seed)
-    await connection.query('DELETE FROM activities');
-    await connection.query('DELETE FROM visits');
-    await connection.query('DELETE FROM leads');
-
-    console.log('🧹 Cleared existing database records.');
+    console.log('🧹 Clearing existing collections...');
+    await Lead.deleteMany({});
+    await Visit.deleteMany({});
+    await Activity.deleteMany({});
 
     // Insert leads
     const leadMap = {};
     for (const data of LEADS_DATA) {
-      const _id = crypto.randomUUID();
-      const pastDate = new Date(new Date().getTime() - Math.random()*10000000000).toISOString().slice(0, 19).replace('T', ' ');
+      const pastDate = new Date(new Date().getTime() - Math.random() * 10000000000);
 
-      await connection.query(
-        `INSERT INTO leads (id, name, phone, stage, source, budget, location, assignedTo, score, createdAt, lastActivity) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [_id, data.name, data.phone, data.stage, data.source, data.budget, data.location, data.assignedTo, data.score, pastDate, pastDate]
-      );
+      const newLead = await Lead.create({
+        ...data,
+        createdAt: pastDate,
+        lastActivity: pastDate
+      });
       
-      leadMap[data.name] = _id;
+      leadMap[data.name] = newLead._id;
     }
     console.log(`📋 Inserted ${LEADS_DATA.length} leads`);
 
     // Insert visits
     const visitsData = [
-      { leadId: leadMap['Ananya Krishnan'], property: 'Sunshine PG - Koramangala', date: '2026-03-10 11:00:00', status: 'confirmed' },
-      { leadId: leadMap['Rajesh Iyer'], property: 'Elite PG - Indiranagar', date: '2026-03-10 15:00:00', status: 'confirmed' },
-      { leadId: leadMap['Arun Kumar'], property: 'GreenView PG - Whitefield', date: '2026-03-08 10:00:00', status: 'completed', notes: 'considering' },
-      { leadId: leadMap['Kavitha Sundaram'], property: 'Sunshine PG - Koramangala', date: '2026-03-06 14:00:00', status: 'completed', notes: 'booked' },
+      { leadId: leadMap['Ananya Krishnan'], property: 'Sunshine PG - Koramangala', date: new Date('2026-03-10T11:00:00Z'), status: 'confirmed' },
+      { leadId: leadMap['Rajesh Iyer'], property: 'Elite PG - Indiranagar', date: new Date('2026-03-10T15:00:00Z'), status: 'confirmed' },
+      { leadId: leadMap['Arun Kumar'], property: 'GreenView PG - Whitefield', date: new Date('2026-03-08T10:00:00Z'), status: 'completed', notes: 'considering' },
+      { leadId: leadMap['Kavitha Sundaram'], property: 'Sunshine PG - Koramangala', date: new Date('2026-03-06T14:00:00Z'), status: 'completed', notes: 'booked' },
     ];
 
-    for (const vData of visitsData) {
-      await connection.query(
-        `INSERT INTO visits (id, leadId, property, date, status, notes) VALUES (?, ?, ?, ?, ?, ?)`,
-        [crypto.randomUUID(), vData.leadId, vData.property, vData.date, vData.status, vData.notes || '']
-      );
-    }
+    await Visit.insertMany(visitsData);
     console.log(`📅 Inserted ${visitsData.length} visits`);
 
     // Insert activities
@@ -86,16 +77,10 @@ async function seed() {
       { leadId: leadMap['Kavitha Sundaram'], type: 'stage_change', content: 'Stage changed: Visit Completed → Booked 🎉', actor: 'Sneha Patil' },
     ];
 
-    for (const aData of actsData) {
-      await connection.query(
-        `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-        [crypto.randomUUID(), aData.leadId, aData.type, aData.content, aData.actor]
-      );
-    }
+    await Activity.insertMany(actsData);
     console.log(`📊 Inserted ${actsData.length} activity events`);
 
-    connection.release();
-    console.log('\n✅ TiDB Database seeded successfully!');
+    console.log('\n✅ MongoDB Database seeded successfully!');
     process.exit(0);
   } catch (err) {
     console.error('❌ Seed error:', err);

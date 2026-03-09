@@ -1,55 +1,38 @@
 import { Router } from 'express';
-import crypto from 'crypto';
-import { pool } from '../db.js';
+import Activity from '../models/Activity.js';
+import Lead from '../models/Lead.js';
 
 const router = Router();
 
 router.get('/:leadId', async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT *, id as _id, createdAt as timestamp FROM activities WHERE leadId = ? ORDER BY createdAt DESC',
-      [req.params.leadId]
-    );
-    res.json(rows);
+    const activities = await Activity.find({ leadId: req.params.leadId }).sort({ createdAt: -1 });
+    res.json(activities);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const id = crypto.randomUUID();
     const { leadId, type, message, content, agent, actor } = req.body;
     
-    // Fallbacks for variable names between previous implementation and new Table Schema
+    // Front end body normalization
     const finalContent = content || message || '';
     const finalActor = actor || agent || 'System';
 
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+    const activity = new Activity({
+      leadId,
+      type,
+      content: finalContent,
+      actor: finalActor
+    });
 
-    try {
-      await connection.query(
-        `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-        [id, leadId, type, finalContent, finalActor]
-      );
+    await activity.save();
 
-      await connection.query(
-        `UPDATE leads SET lastActivity = CURRENT_TIMESTAMP WHERE id = ?`,
-        [leadId]
-      );
+    await Lead.findByIdAndUpdate(leadId, {
+      lastActivity: new Date()
+    });
 
-      await connection.commit();
-      
-      const [newActivity] = await connection.query(
-        'SELECT *, id as _id, createdAt as timestamp FROM activities WHERE id = ?', 
-        [id]
-      );
-      res.status(201).json(newActivity[0]);
-    } catch (err) {
-      await connection.rollback();
-      throw err;
-    } finally {
-      connection.release();
-    }
+    res.status(201).json(activity);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 

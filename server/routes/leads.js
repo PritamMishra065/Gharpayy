@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import crypto from 'crypto';
-import { pool } from '../db.js';
+import Lead from '../models/Lead.js';
+import Activity from '../models/Activity.js';
+import Visit from '../models/Visit.js';
 
 const router = Router();
 
@@ -8,182 +9,115 @@ router.get('/', async (req, res) => {
   try {
     const { source, stage, search, sort } = req.query;
     
-    let query = 'SELECT *, id as _id FROM leads WHERE 1=1';
-    const params = [];
+    let query = {};
 
-    if (source && source !== 'all') {
-      query += ' AND source = ?';
-      params.push(source);
-    }
-    if (stage && stage !== 'all') {
-      query += ' AND stage = ?';
-      params.push(stage);
-    }
+    if (source && source !== 'all') query.source = source;
+    if (stage && stage !== 'all') query.stage = stage;
     if (search) {
-      query += ' AND (LOWER(name) LIKE ? OR phone LIKE ? OR LOWER(location) LIKE ?)';
-      const searchStr = `%${search.toLowerCase()}%`;
-      params.push(searchStr, searchStr, searchStr);
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { location: { $regex: search, $options: 'i' } }
+      ];
     }
 
-    if (sort === 'oldest') query += ' ORDER BY createdAt ASC';
-    else if (sort === 'score-high') query += ' ORDER BY score DESC';
-    else if (sort === 'score-low') query += ' ORDER BY score ASC';
-    else if (sort === 'name') query += ' ORDER BY name ASC';
-    else query += ' ORDER BY createdAt DESC';
+    let sortObj = { createdAt: -1 };
+    if (sort === 'oldest') sortObj = { createdAt: 1 };
+    else if (sort === 'score-high') sortObj = { score: -1 };
+    else if (sort === 'score-low') sortObj = { score: 1 };
+    else if (sort === 'name') sortObj = { name: 1 };
 
-    const [rows] = await pool.query(query, params);
-    res.json(rows);
+    const leads = await Lead.find(query).sort(sortObj);
+    res.json(leads);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.get('/:id', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT *, id as _id FROM leads WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Lead not found' });
-    res.json(rows[0]);
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    res.json(lead);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/', async (req, res) => {
   try {
-    const id = crypto.randomUUID();
-    const score = req.body.score || Math.floor(Math.random() * 40) + 30;
+    const defaultScore = Math.floor(Math.random() * 40) + 30;
     
-    const { name, phone, stage = 'New Lead', source, budget, location, assignedTo } = req.body;
+    const lead = new Lead({
+      ...req.body,
+      score: req.body.score || defaultScore,
+      stage: req.body.stage || 'New Lead'
+    });
 
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+    await lead.save();
 
-    try {
-      await connection.query(
-        `INSERT INTO leads (id, name, phone, stage, source, budget, location, assignedTo, score) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, name, phone, stage, source, budget, location, assignedTo, score]
-      );
+    await Activity.create({
+      leadId: lead._id,
+      type: 'created',
+      content: `Lead created from ${lead.source} inquiry`,
+      actor: 'System'
+    });
 
-      // Add Creation Activity
-      await connection.query(
-        `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-        [crypto.randomUUID(), id, 'created', `Lead created from ${source} inquiry`, 'System']
-      );
-
-      // Add Assignment Activity if assigned
-      if (assignedTo) {
-        await connection.query(
-          `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-          [crypto.randomUUID(), id, 'assigned', `Assigned to agent ${assignedTo}`, 'System']
-        );
-      }
-
-      await connection.commit();
-      
-      const [newLead] = await connection.query('SELECT *, id as _id FROM leads WHERE id = ?', [id]);
-      res.status(201).json(newLead[0]);
-    } catch (err) {
-      await connection.rollback();
-      throw err;
-    } finally {
-      connection.release();
+    if (lead.assignedTo) {
+      await Activity.create({
+        leadId: lead._id,
+        type: 'assigned',
+        content: `Assigned to agent ${lead.assignedTo}`,
+        actor: 'System'
+      });
     }
+
+    res.status(201).json(lead);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.patch('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
     const updates = req.body;
-    
-    if (Object.keys(updates).length === 0) return res.json({});
+    updates.lastActivity = new Date();
 
-    const [existing] = await pool.query('SELECT * FROM leads WHERE id = ?', [id]);
-    if (existing.length === 0) return res.status(404).json({ error: 'Lead not found' });
-    const oldLead = existing[0];
+    const oldLead = await Lead.findById(req.params.id);
+    if (!oldLead) return res.status(404).json({ error: 'Lead not found' });
 
-    let query = 'UPDATE leads SET ';
-    const params = [];
-    
-    // Convert camelCase to actual column updates (simplified mapping)
-    const allowedFields = ['name', 'phone', 'stage', 'source', 'budget', 'location', 'assignedTo', 'score', 'isNew'];
-    const setClauses = [];
-    
-    for (const key of Object.keys(updates)) {
-      if (allowedFields.includes(key)) {
-        setClauses.push(`${key} = ?`);
-        params.push(updates[key]);
-      }
-    }
-    
-    // Always update lastActivity
-    setClauses.push(`lastActivity = CURRENT_TIMESTAMP`);
+    const lead = await Lead.findByIdAndUpdate(req.params.id, updates, { new: true });
 
-    if (setClauses.length > 1) { // > 1 because lastActivity is always there
-      query += setClauses.join(', ') + ' WHERE id = ?';
-      params.push(id);
-      
-      const connection = await pool.getConnection();
-      await connection.beginTransaction();
-      
-      try {
-        await connection.query(query, params);
-
-        // Stage change activity
-        if (updates.stage && updates.stage !== oldLead.stage) {
-          await connection.query(
-            `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-            [crypto.randomUUID(), id, 'stage_change', `Stage changed: ${oldLead.stage} → ${updates.stage}`, updates.assignedTo || oldLead.assignedTo]
-          );
-        }
-
-        // Assignment activity
-        if (updates.assignedTo && updates.assignedTo !== oldLead.assignedTo) {
-          await connection.query(
-            `INSERT INTO activities (id, leadId, type, content, actor) VALUES (?, ?, ?, ?, ?)`,
-            [crypto.randomUUID(), id, 'reassigned', `Lead reassigned to ${updates.assignedTo}`, updates.assignedTo]
-          );
-        }
-
-        await connection.commit();
-      } catch (err) {
-        await connection.rollback();
-        throw err;
-      } finally {
-        connection.release();
-      }
+    if (updates.stage && updates.stage !== oldLead.stage) {
+      await Activity.create({
+        leadId: lead._id,
+        type: 'stage_change',
+        content: `Stage changed: ${oldLead.stage} → ${updates.stage}`,
+        actor: updates.assignedTo || oldLead.assignedTo || 'System'
+      });
     }
 
-    const [updatedLead] = await pool.query('SELECT *, id as _id FROM leads WHERE id = ?', [id]);
-    res.json(updatedLead[0]);
+    if (updates.assignedTo && updates.assignedTo !== oldLead.assignedTo) {
+      await Activity.create({
+        leadId: lead._id,
+        type: 'reassigned',
+        content: `Lead reassigned to ${updates.assignedTo}`,
+        actor: updates.assignedTo
+      });
+    }
+
+    res.json(lead);
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 router.delete('/:id', async (req, res) => {
   try {
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
-    try {
-      await connection.query('DELETE FROM activities WHERE leadId = ?', [req.params.id]);
-      await connection.query('DELETE FROM visits WHERE leadId = ?', [req.params.id]);
-      const [result] = await connection.query('DELETE FROM leads WHERE id = ?', [req.params.id]);
-      
-      if (result.affectedRows === 0) {
-        await connection.rollback();
-        return res.status(404).json({ error: 'Lead not found' });
-      }
-      
-      await connection.commit();
-      res.json({ message: 'Lead deleted' });
-    } catch (err) {
-      await connection.rollback();
-      throw err;
-    } finally {
-      connection.release();
-    }
+    await Activity.deleteMany({ leadId: req.params.id });
+    await Visit.deleteMany({ leadId: req.params.id });
+    const lead = await Lead.findByIdAndDelete(req.params.id);
+    
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    res.json({ message: 'Lead deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.get('/stats/dashboard', async (req, res) => {
   try {
-    const [leads] = await pool.query('SELECT * FROM leads');
+    const leads = await Lead.find();
     
     const totalLeads = leads.length;
     const byStage = {};

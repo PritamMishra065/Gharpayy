@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { initDB } from './db.js';
+import { connectDB } from './db.js';
 import leadRoutes from './routes/leads.js';
 import visitRoutes from './routes/visits.js';
 import activityRoutes from './routes/activities.js';
@@ -16,25 +16,34 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
+// In serverless, we ensure the DB is connected on every request
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    console.error('Database connection failed', err);
+    res.status(500).json({ error: 'Internal Server Error (Database)' });
+  }
+});
+
 app.use('/api/leads', leadRoutes);
 app.use('/api/visits', visitRoutes);
 app.use('/api/activities', activityRoutes);
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', db: 'local_json' });
-});
-
-// Initialize DB
-initDB().catch(err => {
-  console.error('❌ Failed to initialize TiDB database:', err);
+app.get('/api/health', async (req, res) => {
+  res.json({ status: 'ok', db: 'mongodb' });
 });
 
 // For local development
 if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`🚀 API server running on http://localhost:${PORT}`);
-    console.log(`📦 Using TiDB MySQL database`);
+    try {
+      await connectDB();
+    } catch(err) {
+      console.error('❌ Failed to initialize MongoDB database:', err);
+    }
   });
 }
 
