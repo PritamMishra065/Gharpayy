@@ -1,10 +1,9 @@
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import { connectDB } from './db.js';
 import Lead from './models/Lead.js';
 import Visit from './models/Visit.js';
 import Activity from './models/Activity.js';
 
-dotenv.config();
 
 const LEADS_DATA = [
   { name: 'Ananya Krishnan', phone: '+91 98765 43210', source: 'whatsapp', stage: 'visit_scheduled', score: 85, assignedTo: 'Priya Sharma', location: 'Koramangala', budget: '8000-10000' },

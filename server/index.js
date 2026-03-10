@@ -1,12 +1,11 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import { connectDB } from './db.js';
 import leadRoutes from './routes/leads.js';
 import visitRoutes from './routes/visits.js';
 import activityRoutes from './routes/activities.js';
 
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
